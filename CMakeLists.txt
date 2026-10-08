@@ -195,6 +195,16 @@ if(WIN32)
   wwhd_windows_resources(wwhd "The Wind Waker HD, native PC port" "wwhd.exe" gui)
   # advapi32: the Windows version for the performance report (report_header.cpp, RegGetValueW)
   target_link_libraries(wwhd PRIVATE winmm ws2_32 advapi32)  # timeBeginPeriod (main.cpp), Cemuhook client sockets (motion/dsu.cpp)
+  if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    # 128-bit division (the timebase, threads.cpp) calls compiler-rt's __udivti3, which clang does not
+    # link by itself for the MSVC ABI (MSYS2's clang does): link its builtins library where it ships one
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-libgcc-file-name -rtlib=compiler-rt
+                    OUTPUT_VARIABLE WWHD_CLANG_BUILTINS OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(WWHD_CLANG_BUILTINS AND EXISTS "${WWHD_CLANG_BUILTINS}")
+      file(TO_CMAKE_PATH "${WWHD_CLANG_BUILTINS}" WWHD_CLANG_BUILTINS)
+      target_link_libraries(wwhd PRIVATE "${WWHD_CLANG_BUILTINS}")
+    endif()
+  endif()
 endif()
 if(WWHD_HAS_METAL)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)

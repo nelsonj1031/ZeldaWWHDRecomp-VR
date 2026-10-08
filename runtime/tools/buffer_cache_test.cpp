@@ -250,10 +250,10 @@ int main() {
     {
         TestBacking tiny;
         tiny.budget = 0;
-        Cache small(tiny);
+        Cache starved(tiny);  // (not `small`: a macro of the Windows headers)
         Entry* t;
-        assert(small.lookup({a, kRaw, 0}, 64, t) == kMiss && !small.upload(*t, g_mem + a, 64));
-        assert(small.stats.bypassNoMemory == 1);
+        assert(starved.lookup({a, kRaw, 0}, 64, t) == kMiss && !starved.upload(*t, g_mem + a, 64));
+        assert(starved.stats.bypassNoMemory == 1);
     }
     printf("no memory: ok\n");
 

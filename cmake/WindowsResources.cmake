@@ -32,6 +32,13 @@ function(wwhd_windows_resources target description original kind)
     # link.exe / lld-link embed the manifest themselves (a second one in the .rc would collide)
     set(WWHD_RC_MANIFEST_LINE "")
     target_sources(${target} PRIVATE "${manifest}")
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+      # clang with lld-link: the linker merges the manifest with a trustInfo of its own, and the lld-link
+      # that ships with Visual Studio writes the result with prefixed attributes (ms_asmv1:level), which
+      # Windows refuses ("side-by-side configuration is incorrect"). The manifests here carry their own
+      # trustInfo, so the linker adds none.
+      target_link_options(${target} PRIVATE "LINKER:/MANIFESTUAC:NO")
+    endif()
   else()
     # MinGW (llvm-mingw, MSYS2): the manifest as resource 1 of type RT_MANIFEST (24)
     file(TO_CMAKE_PATH "${manifest}" manifest_path)
