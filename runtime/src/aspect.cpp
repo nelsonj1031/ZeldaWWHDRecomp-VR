@@ -35,6 +35,7 @@
 
 #include "gx2/gx2_cmd.h"
 #include "runtime.h"
+#include "xr/world.h"
 
 namespace aspect {
 namespace {
@@ -101,7 +102,8 @@ void adjust_projection_args(Cpu* c, int fovyReg, int aspectReg) {
     float kx, ky;
     factors(g_game, kx, ky);
     c->f[aspectReg].ps0 = c->f[aspectReg].ps1 = g_game;
-    c->f[fovyReg].ps0 = c->f[fovyReg].ps1 = vert_plus_fovy((float)c->f[fovyReg].ps0, ky);
+    // (world mode of the VR headset, xr/world.h, puts an eye's own field of view into the camera)
+    if (xrworld::aspect() == 0) c->f[fovyReg].ps0 = c->f[fovyReg].ps1 = vert_plus_fovy((float)c->f[fovyReg].ps0, ky);
 }
 }  // namespace
 
@@ -133,6 +135,8 @@ void set_window_aspect(float a) {
     g_window.store(q, std::memory_order_relaxed);
 }
 float requested() {
+    // world mode of the VR headset (xr/world.h): the shape of an eye's field of view
+    if (float eye = xrworld::aspect()) return clamp_aspect(eye);
     if(float pack=mods::cemu::aspect_ratio())return pack;
     int m = mode();
     return clamp_aspect(m == kWindow ? g_window.load(std::memory_order_relaxed) : mode_value(m));
@@ -303,6 +307,12 @@ extern "C" void hook_028766CC(Cpu* c) {
     uint32_t parent = ld32(pane + kPaneParent);
     float kx, ky;
     factors(g_game, kx, ky);
+    // World mode of the VR headset (xr/world.h) draws the layouts smaller, in the middle of the view:
+    // what is placed over the 3D picture or has to cover it is scaled back up, and nothing moves out
+    // to the edges, where nobody can read it.
+    const float hud = xrworld::hud_scale();
+    kx /= hud;
+    ky /= hud;
     if (!parent) {  // a layout's root: decide for the whole tree
         uint32_t saveRoot = t_root;
         bool saveAnchor = t_anchor;
@@ -345,7 +355,7 @@ extern "C" void hook_028766CC(Cpu* c) {
         if (name_is(pane, "L_EnemyHP_00") || name_is(pane, "L_CommandA_00")) {
             nx = tx * kx;
             ny = ty * ky;
-        } else if (is_hud_edge_pane(pane)) {
+        } else if (hud == 1.0f && is_hud_edge_pane(pane)) {
             if (tx <= -300.0f) nx = tx - half;
             if (tx >= 300.0f) nx = tx + half;
             if (ty <= -200.0f) ny = ty - halfY;

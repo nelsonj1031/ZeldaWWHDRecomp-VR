@@ -31,6 +31,7 @@ void request_capture();
 void ss_reset_surfaces();
 void save_renderer_caches();
 int renderer_smoke_test();
+int headset_smoke_test(int seconds);  // --vr-smoke: the actual VR headset, no game files (smoke.cpp)
 std::string device_description();  // "<GPU>, driver <version>, Vulkan <version>" ("" before init)
 namespace vk { void reset_shader_memoization(); }
 

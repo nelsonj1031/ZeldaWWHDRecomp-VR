@@ -28,6 +28,8 @@
 #include "settings.h"
 #include "sparse_hash_memo.h"
 #include "write_watch.h"
+#include "xr/xr.h"
+#include "xr/xr_vulkan.h"
 #include <algorithm>
 #include <functional>
 #include <array>
@@ -1344,15 +1346,34 @@ void swap() {
     plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
   set_present_plan(&plan);
-  // settings overlay: built once, drawn into the TV window and its present dumps
-  set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
+  // VR headset (xr/xr.h): this waits for its next frame, which paces the game like a display's vsync;
+  // the screen in the headset shows what the TV window shows. In world mode (xr/world.h) the picture
+  // is one eye's view of the game world and goes into that eye's image instead; while the settings
+  // overlay or the text prompt is up, the screen comes back and shows the left eye's pictures.
+  const xrworld::Frame eye = xrworld::take_frame();
+  const bool menus = overlay::captures();
+  const bool world = eye.eye && eye.settled && !menus && headset_eye(eye, tvScan, drcScan);
+  const bool skipped = world || (eye.eye && (!eye.settled || eye.index == 1));  // no screen for this picture
+  const HeadsetFrame headset = skipped ? HeadsetFrame{} : headset_begin(tvScan);
+  // settings overlay: built once (laid out for the headset's screen when it is on), drawn into the
+  // headset's screen, the TV window and its present dumps
+  set_overlay_draw(overlay::frame(headset.on ? headset.width : plan.dw > 0 ? plan.dw : layerW,
+                                  headset.on ? headset.height : plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
   bool sampled[2] = {};
   if (plan.sample_auto && drcScan) {
     sampled[0] = record_signature(0, *drcScan, R.drc.srgb.load());
     sampled[1] = sampled[0] && tvScan && record_signature(1, *tvScan, R.tv.srgb.load());
   }
-  present(R.tv);
-  if (plan.drc_window)
+  if (headset.on)
+    headset_draw(drcScan);
+  // with a headset the windows mirror the picture without waiting for the monitor (settings.cpp,
+  // effective_present_mode); a surface that only presents with vsync would hold the headset to the
+  // monitor's rate, so such a window stands still while the headset draws
+  // (in world mode the windows show the left eye only: the eyes' pictures would flicker in turn)
+  const bool mirror = (!headset.on && !world) || (R.tv.presentMode != kPresentFifo && !(world && eye.index == 1));
+  if (mirror)
+    present(R.tv);
+  if (plan.drc_window && mirror)
     present(R.drc);
   // asynchronous presentation: queued like GX2Flush work, the ring's fences retire it (the automatic
   // overlay's signatures are read back right away, so those frames wait; present dumps and captures
@@ -1776,6 +1797,23 @@ static void init_device(std::vector<const char *> extensions,
   for (const char *e : extensions)
     if (!has_extension(ies, e))
       throw std::runtime_error(std::string("the Vulkan driver lacks instance extension ") + e);
+#ifdef WWHD_OPENXR
+  // VR headset (xr/xr.h): its runtime says which Vulkan extensions and which GPU it works with. A step
+  // that fails leaves the game on its windows alone (xr::abandon).
+  static std::vector<std::string> headsetInstance, headsetDevice;  // (`extensions` / `de` point into them)
+  if (xr::requested() && xr::start()) {
+    headsetInstance = xr::vulkan_instance_extensions();
+    for (const std::string &e : headsetInstance)
+      if (!has_extension(ies, e.c_str())) {
+        xr::abandon(("the Vulkan driver lacks " + e + ", which the headset needs").c_str());
+        break;
+      }
+    if (xr::started())
+      for (const std::string &e : headsetInstance)
+        if (std::none_of(extensions.begin(), extensions.end(), [&](const char *x) { return e == x; }))
+          extensions.push_back(e.c_str());
+  }
+#endif
   VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   if (has_extension(ies, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
     extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -1818,10 +1856,28 @@ static void init_device(std::vector<const char *> extensions,
   std::vector<VkPhysicalDevice> devices(n);
   vkEnumeratePhysicalDevices(R.instance, &n, devices.data());
   devices.resize(n);
+  // the GPU a VR headset is connected to: the only choice while the headset is used
+  VkPhysicalDevice headsetGpu = VK_NULL_HANDLE;
+#ifdef WWHD_OPENXR
+  if (xr::started() && !(headsetGpu = xr::vulkan_physical_device(R.instance)))
+    xr::abandon("its runtime named no graphics card");
+#endif
   // First the GPUs with Vulkan 1.3 (in the driver's order), then those with VK_KHR_dynamic_rendering
   std::string unsuitable;  // the GPUs passed over, for the message when none is left
+  for (int attempt = 0; attempt < 2 && !R.physicalDevice; attempt++) {
+#ifdef WWHD_OPENXR
+  if (attempt) {  // no luck with the headset's GPU: any GPU, without the headset
+    if (!headsetGpu)
+      break;
+    xr::abandon("the graphics card the headset is connected to cannot run the game's renderer");
+    headsetGpu = VK_NULL_HANDLE;
+    unsuitable.clear();
+  }
+#endif
   for (DynamicRendering want : {DynamicRendering::Core, DynamicRendering::KHR}) {
     for (auto device : devices) {
+      if (headsetGpu && device != headsetGpu)
+        continue;
       VkPhysicalDeviceProperties properties;
       vkGetPhysicalDeviceProperties(device, &properties);
       const DynamicRendering have = dynamic_rendering(device, properties, device_extensions(device));
@@ -1858,6 +1914,7 @@ static void init_device(std::vector<const char *> extensions,
     if (R.physicalDevice)
       break;
   }
+  }
   if (!R.physicalDevice)
     throw std::runtime_error(
         devices.empty()
@@ -1888,6 +1945,20 @@ static void init_device(std::vector<const char *> extensions,
   }
   if (has_extension(des, "VK_KHR_portability_subset"))
     de.push_back("VK_KHR_portability_subset");
+#ifdef WWHD_OPENXR
+  if (xr::started()) {
+    headsetDevice = xr::vulkan_device_extensions();
+    for (const std::string &e : headsetDevice)
+      if (!has_extension(des, e.c_str())) {
+        xr::abandon(("the graphics card lacks " + e + ", which the headset needs").c_str());
+        break;
+      }
+    if (xr::started())
+      for (const std::string &e : headsetDevice)
+        if (std::none_of(de.begin(), de.end(), [&](const char *x) { return e == x; }))
+          de.push_back(e.c_str());
+  }
+#endif
   R.portabilitySubset =
       has_extension(des, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
   VkPhysicalDevicePortabilitySubsetFeaturesKHR portability{
@@ -1968,6 +2039,11 @@ static void init_device(std::vector<const char *> extensions,
            "create Vulkan device");
   load_device_functions(R.device, R.dynamicRenderingKHR);
   vkGetDeviceQueue(R.device, R.queueFamily, 0, &R.queue);
+#ifdef WWHD_OPENXR
+  // (before the windows' swapchains: with a headset they present without waiting for the monitor)
+  if (xr::started() && xr::create_session(R.instance, R.physicalDevice, R.device, R.queueFamily, 0))
+    headset_started();
+#endif
   init_pipeline_cache();
   for (auto& slot:R.submissions) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2120,6 +2196,9 @@ void init() {
                                                   nullptr, &R.drc.surface))
       throw std::runtime_error(SDL_GetError());
   });
+  // in a VR headset nobody looks after the windows' focus: gamepads keep working without it
+  if (xr::active())
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
   mods::mouse_init(R.tv.window);
   input::set_prompt_window(R.tv.window);
   input::init();
@@ -2134,6 +2213,7 @@ void save_renderer_caches() {
   destroy_gpu_timestamp_queries();
   vk::save_shader_cache();
   save_pipeline_cache();
+  xr::shutdown();  // a VR headset's runtime must not find its session open when the process ends
 }
 #ifdef WWHD_SDL_HOST
 // GamePad touch screen: the left mouse button on the GamePad picture, in the GamePad window (window
@@ -2432,7 +2512,20 @@ void run_main_loop() {
     static auto polled = now;  // twice a second: frame interpolation's cap (and Android's display mode)
     if (now - polled >= std::chrono::milliseconds(500) || polled == now) {
       polled = now;
-      display_rate::poll(R.tv.window);
+      // a running VR headset is the display: its refresh rate caps frame interpolation, and its frame
+      // wait is the vsync (xr/xr.h)
+      static bool headsetPaces = false;
+      if (const int hz = xr::display_hz()) {
+        // (world mode draws two passes, the two eyes, for each of the headset's frames)
+        interp::set_display_hz(xrworld::active() ? 2 * hz : hz);
+        interp::set_present_vsync(true);
+        headsetPaces = true;
+      } else {
+        if (headsetPaces)
+          interp::set_present_vsync(R.tv.presentMode == kPresentFifo);
+        headsetPaces = false;
+        display_rate::poll(R.tv.window);
+      }
     }
     if (elapsed >= 0.5 && !input::text_prompt_active()) {
       uint64_t frames = gx2::flips_presented();

@@ -39,12 +39,16 @@ enum Op : uint32_t {
     // aspect ratio (aspect.cpp), appended to keep the numbers of recorded display lists
     OP_SET_PROJ_REGS,   // first register, 16 values: a layout projection matrix (narrowed when drawing to the TV)
     OP_LAYOUT_ROOT,     // nw::lyt root pane: drawn into the target bound now (which screen it goes to)
+    OP_VR_EYE,          // host-only: a camera of the VR headset's world mode was drawn (xr/world.h)
     OP_COUNT
 };
 
 // emit a command (records into the active display list, or executes now)
 void emit(Op op, const uint32_t* payload, uint32_t n);
 inline void emit(Op op, std::initializer_list<uint32_t> payload) { emit(op, payload.begin(), (uint32_t)payload.size()); }
+
+// world mode of the VR headset (xr/world.cpp, the game's main thread): OP_VR_EYE, never part of a display list
+void vr_eye(const uint32_t* words, uint32_t n);
 
 // register writes
 void set_reg(uint32_t reg, uint32_t value);

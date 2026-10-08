@@ -47,6 +47,7 @@ constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull;
 std::map<uint64_t, Device> g_devices;   // controllers (key: host device id) and the DSU slot (key kDsuDevice)
 uint64_t g_active = kNone;              // the device that turns the virtual GamePad
 Aim g_pending;                          // the active device's aim not yet read by the game
+Clock::time_point g_vr_seen{};          // the VR controller's latest sample
 VirtualPad g_pad;                       // the one virtual GamePad all sources turn
 std::unique_ptr<dsu::Client> g_dsu;
 VpadMotion g_last;                      // the previous read's values (repeated reads)
@@ -166,11 +167,11 @@ const std::vector<TestTurn>& test_turns() {
 }  // namespace
 
 const char* source_id(int s) {
-    static const char* ids[] = {"off", "controller", "cemuhook", "mouse"};
+    static const char* ids[] = {"off", "controller", "cemuhook", "mouse", "vr"};
     return s >= 0 && s < kSourceCount ? ids[s] : "off";
 }
 const char* source_label(int s) {
-    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)"};
+    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "VR controller (right hand)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
 int source_from_id(const std::string& id) {
@@ -300,6 +301,12 @@ void mouse_motion(float dx, float dy) {
     g_mouse_dx += dx;
     g_mouse_dy += dy;
 }
+void vr_turn(float yaw, float pitch) {
+    std::lock_guard lk(g_mu);
+    if (g_settings.source != kVR) return;
+    g_vr_seen = Clock::now();
+    g_pending = g_pending + Aim{yaw, pitch};
+}
 bool mouse_drives_gyro() {
     std::lock_guard lk(g_mu);
     return g_settings.source == kMouse && g_aiming;
@@ -393,6 +400,9 @@ VpadMotion vpad(bool repeat) {
             log_msg("[gyro] no motion from %s for 1 s (the window lost focus, or the controller stopped sending)",
                     device_name(g_active).c_str());
         }
+    } else if (g_settings.source == kVR) {
+        aim = g_settings.tuning.apply(g_pending);
+        g_pending = {};
     }
     g_pad.turn(step, aim);
     g_read_aim = g_read_aim + aim;
@@ -428,6 +438,10 @@ std::string status() {
                                   : "No connected controller has a gyro (or this host cannot read it).";
     }
     case kMouse: return (g_aiming ? "The game aims: the mouse turns the GamePad." : "Mouse gyro waits for the game to aim.") + stick;
+    case kVR:
+        return (g_vr_seen.time_since_epoch().count() && secs(Clock::now() - g_vr_seen) < 1.0
+                    ? "The right VR controller turns the GamePad."
+                    : "No motion from a VR controller (the game is not in a headset, or the controller is not tracked).") + stick;
     default: return "Gyro off: the GamePad lies still.";
     }
 }

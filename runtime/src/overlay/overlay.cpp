@@ -45,6 +45,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../render_prof.h"
 #include "../build_info.h"
 #include "../report_header.h"
+#include "../xr/xr.h"
 
 namespace gx2 { uint64_t flips_presented(); bool uncapped(); void set_uncapped(bool on); }
 
@@ -130,6 +131,7 @@ struct Ui {
     // controller
     float values[input_map::kPadCount] = {};
     float prev[input_map::kPadCount] = {};
+    bool letters = false;  // confirm and cancel by the controller's letters (nav_pad)
     double options_since = -1;
     bool options_latched = false;
     // remap capture: action, column (0, 1 keys; 2 controller)
@@ -161,6 +163,14 @@ Ui U;
 
 bool controller_down(int p) { return U.values[p] > 0.5f; }
 bool controller_pressed(int p) { return U.values[p] > 0.5f && U.prev[p] <= 0.5f; }
+// The south button confirms and the east one cancels. A VR headset's controllers (xr/xr.h) feed their A
+// to the east, like a Nintendo pad, so the game's prompts name the right buttons: while they are the
+// controllers in use, the letters decide here too (A confirms, B cancels).
+int nav_pad(int p) {
+    using namespace input_map;
+    if (!U.letters) return p;
+    return p == kPadA ? kPadB : p == kPadB ? kPadA : p == kPadX ? kPadY : p == kPadY ? kPadX : p;
+}
 
 void post_changed(std::function<void()> fn) {
     hostui::post([fn] {
@@ -331,6 +341,7 @@ void read_controller() {
         return;
     }
     input::host_controller_values(U.values);
+    U.letters = xr::controllers_in_use();
     using namespace input_map;
     const double t = now_s();
     // Home: toggles; Select / Minus (View / Share): held half a second opens, a press closes
@@ -362,10 +373,10 @@ void read_controller() {
 void feed_gamepad(ImGuiIO& io, bool enabled) {
     using namespace input_map;
     auto key = [&](ImGuiKey k, int p) { io.AddKeyAnalogEvent(k, enabled && U.values[p] > 0.5f, enabled ? U.values[p] : 0.0f); };
-    key(ImGuiKey_GamepadFaceDown, kPadA);
-    key(ImGuiKey_GamepadFaceRight, kPadB);
-    key(ImGuiKey_GamepadFaceLeft, kPadX);
-    key(ImGuiKey_GamepadFaceUp, kPadY);
+    key(ImGuiKey_GamepadFaceDown, nav_pad(kPadA));
+    key(ImGuiKey_GamepadFaceRight, nav_pad(kPadB));
+    key(ImGuiKey_GamepadFaceLeft, nav_pad(kPadX));
+    key(ImGuiKey_GamepadFaceUp, nav_pad(kPadY));
     key(ImGuiKey_GamepadDpadUp, kPadDUp);
     key(ImGuiKey_GamepadDpadDown, kPadDDown);
     key(ImGuiKey_GamepadDpadLeft, kPadDLeft);
@@ -753,6 +764,52 @@ void tab_display() {
         }
         note("A click (or touch) on the GamePad picture touches the GamePad screen.");
     }
+    // VR headset (xr/xr.h, docs/vr.md): the options apply at once, the switch itself at the next start
+    if (xr::compiled()) {
+        heading("VR headset");
+        xr::Options o = xr::options();
+        const xr::Options before = o;
+        if (check("Play in the VR headset (from the next start)", o.enabled, &v)) o.enabled = v;
+        help("The game in a headset that works with OpenXR: a Meta Quest over Link or Air Link, SteamVR and others. "
+             "Connect the headset before starting the game; --vr and --no-vr decide one start.");
+        note("%s", xr::status().c_str());
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("Screen size", &o.size, xr::Options::kMinSize, xr::Options::kMaxSize, "%.0f degrees wide");
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("Screen distance", &o.distance, xr::Options::kMinDistance, xr::Options::kMaxDistance, "%.1f m");
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("Screen height", &o.height, -1.5f, 1.5f, "%+.2f m");
+        ImGui::BeginDisabled(xr::active() && !xr::curve_supported());
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("Screen curve", &o.curve, 0.0f, 1.0f, o.curve < 0.02f ? "flat" : "%.2f");
+        ImGui::EndDisabled();
+        help("0 is a flat screen, 1 a screen curved around you. Not every headset's software can show a curved one.");
+        if (check("GamePad screen on the left controller", o.gamepad, &v)) o.gamepad = v;
+        help("Click the left stick (press it and let go) to take the GamePad screen out on your left controller, and again "
+             "to put it away. Point the right controller at it; its trigger touches the screen.");
+        ImGui::SameLine(0, 24);
+        if (check("Rumble on the VR controllers", o.haptics, &v)) o.haptics = v;
+        // world mode (xr/world.h)
+        if (check("The game world around you, in 3D (world mode)", o.world, &v)) o.world = v;
+        help("On: you stand where the game's camera is and look around with your own head; menus without a 3D scene, "
+             "the telescope and these settings show on a screen. Off: the whole game on that screen. Every picture is drawn "
+             "twice, once per eye: frame interpolation is switched on at 120 fps for that and gives 60 pictures a second in "
+             "the headset, or 30 where the computer cannot draw the scene four times per game step.");
+        ImGui::BeginDisabled(!o.world);
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("World scale", &o.scale, xr::Options::kMinScale, xr::Options::kMaxScale, "%.0f game units to the metre", ImGuiSliderFlags_Logarithmic);
+        help("How large the world is around you: smaller numbers make it larger. 100 is about life size.");
+        ImGui::SetNextItemWidth(260);
+        ImGui::SliderFloat("HUD size", &o.hud, xr::Options::kMinHud, xr::Options::kMaxHud, "%.2f of the view");
+        ImGui::EndDisabled();
+        if (ImGui::Button("Recentre the screen")) xr::recenter();
+        help("Puts the screen in front of where you look now (also: hold the left stick down and click the right one).");
+        note("VR controllers: sticks, A B X Y, triggers = ZL / ZR, grips = L / R, Menu = Plus (hold it for these settings). "
+             "A click of the left stick takes out the GamePad screen. Hold the left stick down for more: the right stick is "
+             "the D-pad, Menu is Minus, the right stick's click recentres. Controls > Gyro > VR controller aims the bow "
+             "and the other first-person items with the right controller.");
+        if (!(o == before)) hostui::post([o] { xr::set_options(o); });
+    }
 }
 
 // The one-time native code confirmation (packages.h confirm_native): asked before enable() for each
@@ -785,7 +842,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
-        if (controller_pressed(input_map::kPadB)) { answered = true; accept = false; g_pad_b_used = true; }
+        if (controller_pressed(nav_pad(input_map::kPadB))) { answered = true; accept = false; g_pad_b_used = true; }
     }
     if (accept) {
         bool ok = true;
@@ -1146,6 +1203,7 @@ void gyro_window(bool& open) {
         if (radio(motion::source_label(i), g.source == i)) g.source = i;
     if (motion::env_override()) note("WWHD_GYRO=%s overrides the saved source.", getenv("WWHD_GYRO"));
     if (g.source == motion::kOff && motion::gyro_controllers() > 0) note("A controller with a gyro is connected: choose Controller gyro to use it.");
+    if (g.source == motion::kVR) note("The right controller of a VR headset (Display > VR headset): the view turns as you point it.");
     if (g.source == motion::kController || g.source == motion::kCemuhook) {
         ImGui::TextUnformatted("Turn left/right by");
         for (int a = 0; a < motion::kAxisModeCount; a++) {
@@ -1534,7 +1592,7 @@ void settings_window() {
     ImGui::End();
     // B (not while choosing an input or in a list) or the close button closes the menu
     if (!open) set_open(false);
-    if (U.cap_action < 0 && controller_pressed(input_map::kPadB) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+    if (U.cap_action < 0 && controller_pressed(nav_pad(input_map::kPadB)) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
         set_open(false);
     g_pad_b_used = false;
 }
@@ -1714,6 +1772,10 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     if (text) {
         float pad[input_map::kPadCount];
         std::copy(std::begin(U.values), std::end(U.values), pad);
+        if (U.letters) {  // the on-screen keyboard's A, B, X and Y are the controller's (nav_pad)
+            std::swap(pad[input_map::kPadA], pad[input_map::kPadB]);
+            std::swap(pad[input_map::kPadX], pad[input_map::kPadY]);
+        }
         if (g_no_host) test_pad(pad);  // WWHD_TEST_PAD drives the on-screen keyboard in test runs
         if (text_entry::draw(pad)) {
             // answered: the game sees no buttons until the one that confirmed is released

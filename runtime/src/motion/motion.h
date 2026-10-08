@@ -9,6 +9,8 @@
 //               BetterJoy, SteamDeckGyroDSU, phone apps
 //   mouse       mouse movement turns the GamePad while the game aims (bow, telescope, ...): for Steam
 //               Input's "gyro to mouse" and plain mice
+//   vr          the right controller of a VR headset (xr/xr.h): the GamePad turns as the controller's
+//               aim does, left/right about the real vertical and up/down
 // The game decides itself when it uses the gyro (its own Options "Gyro" switch, aiming, the right stick
 // released); this module only reports how the virtual GamePad moves. WWHD turns its first-person camera by
 // the change of the GamePad's direction from one frame to the next (fusion.h, docs/gyro.md), so the sources
@@ -34,8 +36,8 @@
 
 namespace motion {
 
-enum Source : int { kOff, kController, kCemuhook, kMouse, kSourceCount };
-const char* source_id(int s);     // "off", "controller", "cemuhook", "mouse"
+enum Source : int { kOff, kController, kCemuhook, kMouse, kVR, kSourceCount };
+const char* source_id(int s);     // "off", "controller", "cemuhook", "mouse", "vr"
 const char* source_label(int s);
 int source_from_id(const std::string& id);  // -1 if unknown
 
@@ -81,6 +83,8 @@ void mouse_motion(float dx, float dy);
 // the mouse source is active and the game aims now: mouse movement belongs to the gyro (the mouse
 // camera mod leaves it alone) and the hosts capture the pointer while this holds
 bool mouse_drives_gyro();
+// a VR controller's aim turned by this much since its previous sample (radians, right / up)
+void vr_turn(float yaw, float pitch);
 // mods/camera.cpp: the game's aiming / first-person state, once per logic step
 void set_aiming(bool aiming);
 bool aiming();

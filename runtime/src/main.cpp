@@ -34,6 +34,7 @@
 #include "mods/manager.h"
 #include "mods/packages.h"
 #include "runtime.h"
+#include "xr/xr.h"
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
@@ -41,7 +42,7 @@ namespace interp { void set_mode(int); }
 #endif
 
 #ifdef WWHD_HAS_VULKAN
-namespace gfxvk { int renderer_smoke_test(); }
+namespace gfxvk { int renderer_smoke_test(); int headset_smoke_test(int seconds); }
 #endif
 #ifdef WWHD_HAS_METAL
 int gfx_headstart_warm();  // gfx/shader_headstart.mm
@@ -286,6 +287,7 @@ int main(int argc, char** argv) {
     bool warm_shaders = false;
 #ifdef WWHD_HAS_VULKAN
     bool renderer_smoke = false;
+    int vr_smoke = 0;  // seconds
 #endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) config::game_dir = argv[++i];
@@ -294,7 +296,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
 #ifdef WWHD_HAS_VULKAN
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
+        else if (!strcmp(argv[i], "--vr-smoke")) {
+            // self-test with the actual VR headset (no game files); optional: how many seconds it runs
+            vr_smoke = i + 1 < argc && atoi(argv[i + 1]) > 0 ? atoi(argv[++i]) : 20;
+            xr::request(true);
+        }
 #endif
+        // the VR headset (xr/xr.h, docs/vr.md) for this start, whatever the saved setting says
+        else if (!strcmp(argv[i], "--vr")) xr::request(true);
+        else if (!strcmp(argv[i], "--no-vr")) xr::request(false);
     }
     install_crash_handler();
     // which build on which system: also in crash logs (their last log lines)
@@ -313,7 +323,7 @@ int main(int argc, char** argv) {
     // Metal or Vulkan: --renderer=, WWHD_RENDERER_RUNTIME, Graphics > Renderer (gfx/renderer.h)
     render::choose(argc, argv);
 #ifdef WWHD_HAS_VULKAN
-    if(renderer_smoke) {
+    if(renderer_smoke || vr_smoke) {
         // GPU self-test of the Vulkan renderer (no game files): always Vulkan, no fallback
         int result = 1;
         host::with_autorelease_pool([&] {
@@ -324,7 +334,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "[renderer smoke] FAIL: Vulkan could not start: %s\n", e.what());
                 return;
             }
-            result = gfxvk::renderer_smoke_test();
+            result = vr_smoke ? gfxvk::headset_smoke_test(vr_smoke) : gfxvk::renderer_smoke_test();
         });
         return result;
     }

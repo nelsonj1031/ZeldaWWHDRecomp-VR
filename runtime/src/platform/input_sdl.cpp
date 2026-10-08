@@ -12,6 +12,7 @@
 #include "../overlay/hostui.h"
 #include "../overlay/overlay.h"
 #include "../overlay/text_entry.h"
+#include "../xr/xr.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -221,10 +222,12 @@ static void rumble_all_locked(Uint16 level,Uint32 ms){
 }
 static void apply_rumble(){
  g_rumble_update_ms=SDL_GetTicks();
- if(g_rumble_controllers.empty()||g_rumble_quit)return;  // no controller with a motor: nothing to do
+ if(g_rumble_quit)return;
  // the share of "on" over the next host frame (the motor spins up and down slower than that)
- float level=rumble::host_level(1000000/60);
- if(overlay::is_open()||!SDL_GetKeyboardFocus())level=0;  // the game cannot stop it from here
+ float level=overlay::is_open()?0:rumble::host_level(1000000/60);  // (open: the game cannot stop it from here)
+ xr::set_haptics(level);  // a VR headset's controllers: their focus is the headset's, not a window's
+ if(g_rumble_controllers.empty())return;  // no controller with a motor: nothing more to do
+ if(!SDL_GetKeyboardFocus()&&!xr::running())level=0;
  std::lock_guard lk(g_pads_mu);
  rumble_all_locked((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu),kRumbleRefreshMs);
 }
@@ -511,6 +514,10 @@ void update(){
   auto stick=[&](SDL_GamepadAxis ax,SDL_GamepadAxis ay,int up,int down,int left,int right){float x=SDL_GetGamepadAxis(pad,ax)/32768.f,y=SDL_GetGamepadAxis(pad,ay)/32768.f;put(right,std::max(x,0.f));put(left,std::max(-x,0.f));put(up,std::max(-y,0.f));put(down,std::max(y,0.f));};
   stick(SDL_GAMEPAD_AXIS_LEFTX,SDL_GAMEPAD_AXIS_LEFTY,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight);stick(SDL_GAMEPAD_AXIS_RIGHTX,SDL_GAMEPAD_AXIS_RIGHTY,kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight);
  }
+ // a VR headset's controllers (xr/xr.h) are one more controller; which kind was used last decides how the
+ // settings overlay reads A and B
+ for(int p=1;p<kPadCount;p++)if(v[p]>0.5f){xr::note_other_controller();break;}
+ xr::poll_controllers(v);
  auto state=input_map::controller_state(input_map::current(),v);std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
  if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT"))motion::poll_recalibrate(v,g_keys);
 }

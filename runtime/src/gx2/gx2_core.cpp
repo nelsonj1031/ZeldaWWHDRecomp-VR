@@ -24,6 +24,7 @@
 #endif
 #include "runtime.h"
 #include "../aspect.h"
+#include "../xr/world.h"
 #include "gfx/renderer.h"
 #include "platform/perf_hint.h"
 #include "render_prof.h"
@@ -306,6 +307,15 @@ static void emit_host(Op op, std::initializer_list<uint32> payload) {
     host::with_autorelease_pool([&] { execute_one(op, payload.begin(), (uint32)payload.size()); });
 }
 
+void vr_eye(const uint32* words, uint32 n) {
+    if (g_render_thread) {
+        enqueue(OP_VR_EYE, words, n);
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+    execute_one(OP_VR_EYE, words, n);
+}
+
 #ifdef WWHD_HAS_VULKAN
 void checkpoint_vulkan_caches() {
     // Wait for queued work, then exclude further renderer mutations while the
@@ -468,14 +478,20 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         uint32 v[16];
         memcpy(v, p + 1, sizeof v);
         float kx, ky;
-        if (n == 17 && render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky))
+        if (n == 17 && render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky)) {
+            float m[16];
+            for (int i = 0; i < 16; i++) m[i] = bitsf(v[i]);
             for (int i = 0; i < 4; i++) {  // rows x and y: the 16:9 layout space centred in the wider picture
-                v[i] = fbits(bitsf(v[i]) / kx);
-                v[4 + i] = fbits(bitsf(v[4 + i]) / ky);
+                m[i] /= kx;
+                m[4 + i] /= ky;
             }
+            xrworld::hud_projection(m);  // an eye of the VR headset: the HUD on its panel in the room (all four rows)
+            for (int i = 0; i < 16; i++) v[i] = fbits(m[i]);
+        }
         apply_regs(p[0], v, std::min<uint32>(n - 1, 16));
         break;
     }
+    case OP_VR_EYE: xrworld::eye_op(p, n); break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
         aspect::layout_root_target(p[0], render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));

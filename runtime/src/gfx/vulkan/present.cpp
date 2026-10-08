@@ -361,6 +361,25 @@ std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filt
  return quads;
 }
 
+void compose_layer(Screen& screen,VkImage image,VkImageView view,VkExtent2D extent,VkFormat format,bool overlay,
+                   const ComposeQuad* extra,size_t extraCount) {
+ int filter=0;auto quads=screen_quads(screen,extent,filter);
+ // (a scan buffer that cannot be sampled leaves the layer black; the windows report it)
+ std::erase_if(quads,[](const ComposeQuad& q){return q.image&&!sampleable(*q.image);});
+ quads.insert(quads.end(),extra,extra+extraCount);
+ VkImageLayout layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+ compose(image,view,layout,extent,format,quads,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),overlay?overlayDraw:nullptr);
+}
+
+void compose_picture(Surface& source,bool sourceLinear,VkImage image,VkImageView view,VkExtent2D extent,VkFormat format) {
+ std::vector<ComposeQuad> quads;
+ if(source.image&&sampleable(source)) {
+  ComposeQuad q;q.image=&source;q.sourceLinear=sourceLinear;q.box={0,0,float(extent.width),float(extent.height)};quads.push_back(q);
+ }
+ VkImageLayout layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+ compose(image,view,layout,extent,format,quads,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr);
+}
+
 bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  auto found=resources.screens.find(&screen);
  if(found==resources.screens.end()||!found->second.drawable) {

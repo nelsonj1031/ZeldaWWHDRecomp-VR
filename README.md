@@ -1,5 +1,12 @@
 # The Legend of Zelda: The Wind Waker HD — native port (macOS, Linux, Windows, Android)
 
+> **VR fork.** This fork of [ZeldaWWHDRecomp](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp)
+> (based on v0.2.8) adds play in a VR headset through OpenXR on Windows, developed with a Meta
+> Quest 2 over Quest Link: the game's world around you in stereoscopic 3D with a head-tracked
+> camera, the Touch controllers as the GamePad, and the GamePad screen on your left controller.
+> It is experimental: the PC draws the game once per eye, about 30 pictures a second per eye on the
+> computer it was written on. Start with `--vr`; everything else is in [docs/vr.md](docs/vr.md).
+
 A static recompilation of the Wii U version (USA) that runs natively on **macOS** (Apple Silicon),
 **Linux**, **Windows** and **Android** (arm64; [build it yourself](#android-build-it-yourself)). The
 game's PowerPC code is translated to C ahead of time, the Cafe OS libraries the game uses are
@@ -781,6 +788,19 @@ the TV window or **⌘Q** first asks *Quit Wind Waker HD?*: **Quit**, **Cancel**
 **Save State and Quit**, which writes save state slot 1 (Save States menu) and then quits. On the
 title screen and the file select, before a file is loaded, it quits without asking.
 `WWHD_QUIT_PROMPT=0` turns the question off; scripted and hidden test runs never ask.
+
+### VR headset (PC VR)
+
+Windows builds can show the game inside a VR headset that has an OpenXR runtime on the PC
+(developed with a Meta Quest 2 over Quest Link) and play it with the headset's controllers: sticks
+and buttons as the GamePad, the game's rumble as haptics, the right controller for gyro aiming and
+as a pointer on the GamePad screen. Start with `--vr`, or turn on **Display > VR headset** in the
+settings overlay. The game's world is around you in stereoscopic 3D (**world mode**): you stand
+where the game's camera is and look around with your own head; with world mode turned off the game
+shows on a large screen in front of you. A click of the left stick takes the GamePad screen out on
+your left controller. World mode draws the game twice per picture. There is no app
+for the headset itself: the Quest 2's graphics driver lacks what the renderer needs. Setup,
+controls, refresh rates, limits and what was tested: [docs/vr.md](docs/vr.md).
 
 ## Notes
 

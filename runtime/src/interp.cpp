@@ -33,8 +33,10 @@
 #include "interp_pacing.h"
 #include "render_prof.h"
 #include "runtime.h"
+#include "motion/motion.h"
 #include "savestate.h"
 #include "true60.h"
+#include "xr/world.h"
 
 
 extern "C" {
@@ -323,7 +325,8 @@ Prev* prev_for(uint32_t cam) {
 // the record pass, an exact step and without interpolation
 float pass_t() {
     if (!enabled()) return 1.0f;
-    return pacing::pass_fraction(g_hold ? g_phase : 0, g_step_n, g_exact_step);
+    // (world mode of a VR headset draws its passes in pairs, the two eyes of one moment: xr/world.h)
+    return pacing::pass_fraction(xrworld::pair_phase(g_hold ? g_phase : 0), g_step_n, g_exact_step);
 }
 // the step's exact state is drawn and recorded (the "before" of the next step's blended frames)
 bool record_pass() { return g_hold && g_phase >= g_step_n; }
@@ -338,6 +341,15 @@ static void cam_trace(uint32_t cam, const char* what) {
     interp::CamState s = interp::read_cam(cam);
     LOG("[interp] camera %08X step %llu t %.3f %-7s eye %.3f %.3f %.3f center %.3f %.3f %.3f", cam, (unsigned long long)interp::g_logic_steps,
         interp::pass_t(), what, s.eye[0], s.eye[1], s.eye[2], s.center[0], s.center[1], s.center[2]);
+}
+
+// world mode of a VR headset (xr/world.h): the camera about to be drawn becomes this pass's eye
+static bool vr_eye_camera(uint32_t cam) {
+    using namespace interp;
+    CamState s = read_cam(cam);
+    if (!xrworld::eye_camera(g_hold ? g_phase : 0, motion::aiming(), s.eye, s.center, s.up, &s.fovy, &s.bank)) return false;
+    write_cam(cam, s);
+    return true;
 }
 
 // camera_draw(camera_process_class*)
@@ -356,6 +368,7 @@ extern "C" void hook_024FFC40(Cpu* c) {
         }
         // (also on a snap: the sound listener keeps following only the record pass's camera)
         g_cam_blended = p->valid;
+        vr_eye_camera(cam);
         cam_trace(cam, "blended");
         f_024FFC40_orig(c);
         g_cam_blended = false;
@@ -364,6 +377,12 @@ extern "C" void hook_024FFC40(Cpu* c) {
     }
     p->s = read_cam(cam);  // exact step: remember it for the next step's blended frames
     p->valid = true;
+    if (vr_eye_camera(cam)) {
+        cam_trace(cam, "exact");
+        f_024FFC40_orig(c);
+        write_cam(cam, p->s);
+        return;
+    }
     cam_trace(cam, "exact");
     if (g_hold && true60::enabled()) {  // true 60: the half pass's camera is a preview (true60.cpp)
         true60::camera_draw_preview(true);
@@ -653,8 +672,12 @@ static std::atomic<bool> g_paced{[] {
 }()};
 static std::atomic<bool> g_paced_hi{!g_env_paced || atoi(g_env_paced) != 0};  // 120/240 fps
 static std::atomic<bool>& paced_flag(int f) { return f > 60 ? g_paced_hi : g_paced; }
-static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed); }
-bool paced_interpolation() { return paced(); }  // at the current frame rate
+// World mode of a VR headset (xr/world.h) draws its passes in pairs, the two eyes of one moment. A
+// pass skipped or dropped within a step would leave an eye without its other eye, so there the
+// step's passes are only planned (plan_step: as many whole pairs as fit) and then all drawn; the
+// game keeps its speed through the plan and the wait before the next logic pass.
+static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed) && !xrworld::active(); }
+bool paced_interpolation() { return paced_flag(fps()).load(std::memory_order_relaxed); }  // at the current frame rate
 bool paced_interpolation_at(int f) { return paced_flag(f).load(std::memory_order_relaxed); }
 void set_paced_interpolation_at(int f, bool on) {
     if (paced_flag(f).exchange(on) != on)
@@ -691,8 +714,10 @@ constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono:
 // a dropped in-between pass (and at 120/240 fps before every logic pass that comes early)
 static void paced_pass_start() {
     static bool previousRecord = false;
-    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
-    if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
+    const bool pairs = xrworld::active();  // (planned like paced steps: the pass durations and the wait below)
+    if ((!paced() && !pairs) || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
+    if (pairs) g_exact_step = false;  // every step has its record pass
+    else if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
     const auto now = pace_clock::now();
     if (g_last_entry != pace_clock::time_point{}) {
@@ -718,10 +743,12 @@ static void paced_pass_start() {
 static int g_step_holds = 0;  // hold passes drawn in this step (a skip to the record pass leaves some out)
 static int plan_step() {
     int n = std::max(1, in_between());
-    if (n > 1 && paced() && interp_on()) {
+    const bool pairs = xrworld::active();
+    if (n > 1 && (paced() || pairs) && interp_on()) {
         n = pacing::plan_in_between(n, kPacedBudget.count(), std::chrono::duration_cast<std::chrono::nanoseconds>(g_logic_avg).count(),
                                     std::chrono::duration_cast<std::chrono::nanoseconds>(g_hold_avg).count());
-        g_paced_planned += n;
+        if (pairs) n = (n - 1) | 1;  // whole pairs: the logic pass and an odd number of in-between passes
+        else g_paced_planned += n;
     }
     if (g_exact_step) n = 1;  // drawn exactly; its record pass makes the next step blend again
     g_step_holds = 0;
@@ -757,16 +784,23 @@ static void paced_step_done(int holds) {
 // the in-between pass is drawn when it fits, otherwise dropped.
 static void after_pass(int phase) {
     const bool pacing = paced() && interp_on();
+    const bool pairs = xrworld::active() && interp_on();
     if (phase > 0) g_step_holds++;
     if (phase >= g_step_n) {  // the record pass ended the step
         g_hold_next = false;
         if (pacing) {
             paced_step_done(g_step_holds);
             if (in_between() > 1) g_wait_step = true;  // fewer passes than planned would make the step short
+        } else if (pairs && in_between() > 1) {
+            g_wait_step = true;  // (a step of fewer pairs than the rate allows)
         }
         return;
     }
-    if (!pacing) { g_hold_next = true; g_wait_step = false; return; }
+    if (!pacing) {
+        g_hold_next = true;
+        if (!pairs) g_wait_step = false;
+        return;
+    }
     if (phase > 0) g_last_hold = pace_clock::now();
     const auto now = pace_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - g_last_logic).count();

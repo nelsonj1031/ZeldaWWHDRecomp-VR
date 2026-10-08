@@ -5,6 +5,7 @@
 #include <cstring>
 #include "../../interp.h"
 #include "gx2/gx2.h"
+#include "xr/xr.h"
 namespace gfxvk {
 namespace {
 int normalize(int v) { return (v % 3 + 3) % 3; }
@@ -41,6 +42,10 @@ bool present_mode_from_env() { return env_present_mode() >= 0; }
 bool present_mode_offered(int m) { return m >= 0 && m < kPresentModes && (g_offered.load() >> m & 1); }
 void set_present_modes_offered(unsigned mask) { g_offered = mask | 1u << kPresentFifo; }
 int effective_present_mode() {
+    // a VR headset paces the frames (xr/xr.h): the windows only mirror them and must not wait for the
+    // monitor's vsync; the newest frame at each refresh, without tearing, where the surface offers it
+    if (xr::active() && !gx2::uncapped())
+        return present_mode_offered(kPresentMailbox) ? kPresentMailbox : present_mode_offered(kPresentImmediate) ? kPresentImmediate : kPresentFifo;
     if (!gx2::uncapped()) return present_mode();
     return present_mode_offered(kPresentImmediate) ? kPresentImmediate : present_mode_offered(kPresentMailbox) ? kPresentMailbox : kPresentFifo;
 }

@@ -7,6 +7,14 @@
 #include "gx2/gx2.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
+#include "xr/xr.h"
+#include "xr/xr_vulkan.h"
+#if defined(WWHD_OPENXR) && defined(WWHD_SDL_HOST)
+#include "input.h"
+#include "input_map.h"
+#include "overlay/hostui.h"
+#include "platform/input_sdl.h"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -642,4 +650,61 @@ int renderer_smoke_test() {
   fprintf(stderr,"[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present\n");return 0;
  }catch(const std::exception& e){fprintf(stderr,"[renderer smoke] FAIL: %s\n",e.what());try {command_buffer();flush();}catch(...){}return 1;}
 }
+#if defined(WWHD_OPENXR) && defined(WWHD_SDL_HOST)
+// VR headset self-test (--vr-smoke [seconds], no game files): a session on the actual headset. Two plain
+// pictures stand in for the game's TV and GamePad pictures, the settings overlay is open on its Display
+// tab (the VR options; the headset's controllers move in it), and what the controllers send is logged.
+// 0: the headset took frames and no OpenXR call failed; 2: a session, but the headset never took a frame
+// (not worn, Link not started); 1: no session, or a failure.
+int headset_smoke_test(int seconds) {
+ try {
+  if(!xr::active()) { fprintf(stderr,"[vr smoke] FAIL: no session. %s\n",xr::status().c_str());return 1; }
+  auto picture=[](Screen& s,uint32_t w,uint32_t h,const float rgba[4]) {
+   if(s.scan)destroy_surface_image(s.scan.get());s.scan=std::make_unique<Surface>();auto& scan=*s.scan;
+   scan.width=w;scan.height=h;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);
+   clear_image(scan,rgba);mark_gpu_written(&scan);
+  };
+  const float sea[4]={0.05f,0.32f,0.55f,1},sand[4]={0.60f,0.48f,0.25f,1};
+  picture(R.tv,1280,720,sea);picture(R.drc,854,480,sand);
+  if(!getenv("WWHD_TEST_OVERLAY")) {  // the settings overlay's test switch (overlay.cpp), read with getenv
+#ifdef _WIN32
+   _putenv_s("WWHD_TEST_OVERLAY","open:display@1");
+#else
+   setenv("WWHD_TEST_OVERLAY","open:display@1",1);
+#endif
+  }
+  xr::show_gamepad(true);
+  fprintf(stderr,"[vr smoke] %d s: a blue screen with the settings (Display tab) and a sand-coloured GamePad panel on the left controller\n",seconds);
+  const auto start=std::chrono::steady_clock::now();
+  uint64_t frames=0,shown=0;float last[input_map::kPadCount]={};bool wasRunning=false;
+  while(std::chrono::steady_clock::now()-start<std::chrono::seconds(seconds)) {
+   bool quit=false;SDL_Event event;
+   while(SDL_PollEvent(&event)) { quit|=event.type==SDL_EVENT_QUIT;input::handle_event(event); }
+   if(quit)break;
+   input::update();::hostui::run_posted();
+   float v[input_map::kPadCount];input::host_controller_values(v);
+   for(int p=1;p<input_map::kPadCount;p++) {
+    const bool down=v[p]>0.5f;
+    if(down!=(last[p]>0.5f))fprintf(stderr,"[vr smoke] controller: %s %s\n",input_map::pad_label(p),down?"down":"up");
+    last[p]=v[p];
+   }
+   const bool running=xr::running();
+   if(running!=wasRunning)fprintf(stderr,"[vr smoke] the headset %s frames (%s)\n",running?"takes":"takes no",xr::status().c_str());
+   wasRunning=running;
+   swap();++frames;
+   if(running)++shown;else SDL_Delay(10);
+  }
+  command_buffer();flush();
+  const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+  fprintf(stderr,"[vr smoke] %llu frames in %.1f s (%.1f a second), %llu while the headset ran; %d failed OpenXR calls; %s\n",
+      (unsigned long long)frames,elapsed,frames/elapsed,(unsigned long long)shown,xr::failures(),xr::status().c_str());
+  xr::shutdown();
+  if(xr::failures()) { fprintf(stderr,"[vr smoke] FAIL: OpenXR calls failed (see the [vr] lines above)\n");return 1; }
+  if(!shown) { fprintf(stderr,"[vr smoke] INCONCLUSIVE: the session exists, but the headset never took a frame (put it on; a Quest: start Link first)\n");return 2; }
+  fprintf(stderr,"[vr smoke] PASS: session, screen and GamePad layers on the actual headset\n");return 0;
+ }catch(const std::exception& e){fprintf(stderr,"[vr smoke] FAIL: %s\n",e.what());try {command_buffer();flush();}catch(...){}xr::shutdown();return 1;}
+}
+#else
+int headset_smoke_test(int) { fprintf(stderr,"[vr smoke] this build has no VR support (CMake: -DWWHD_OPENXR=ON)\n");return 1; }
+#endif
 } // namespace gfxvk

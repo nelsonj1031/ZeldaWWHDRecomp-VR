@@ -4,6 +4,7 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 #include "gfx/display.h"
+#include "xr/world.h"
 struct ImDrawData;
 namespace gfxvk {
 struct Screen;
@@ -18,6 +19,23 @@ void set_present_plan(const gfx::PresentPlan* plan);
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter);
 // the composition of a window into an offscreen image, read back as display-encoded RGBA8
 std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t height,bool srgb);
+// VR headset (xr/xr.h, xr_present.cpp): a window's composition, with the settings overlay if wanted, into
+// a layer image of the headset, which arrives and leaves as a colour attachment. `extra` quads are
+// drawn over the pictures (the GamePad panel's pointer).
+void compose_layer(Screen& screen,VkImage image,VkImageView view,VkExtent2D extent,VkFormat format,bool overlay,
+                   const ComposeQuad* extra=nullptr,size_t extraCount=0);
+// One headset frame inside swap(): headset_begin waits for the headset's next frame (the headset
+// paces the game then, like a display's vsync) and says how large the screen's picture is, for the
+// settings overlay; headset_draw draws the TV and GamePad compositions and hands the frame over.
+struct HeadsetFrame { bool on=false; float width=0,height=0; };
+HeadsetFrame headset_begin(Surface* tvScan);
+void headset_draw(Surface* drcScan);
+// World mode (xr/world.h): the TV picture is one eye's view of the game world and goes into that eye's
+// image, stretched over it; false when the headset takes no picture now. compose_picture: one picture
+// over a whole image, no layout.
+bool headset_eye(const xrworld::Frame& eye,Surface* tvScan,Surface* drcScan);
+void compose_picture(Surface& source,bool sourceLinear,VkImage image,VkImageView view,VkExtent2D extent,VkFormat format);
+void headset_started();  // a session exists: its images' views end with it
 // the climb mod's stamina wheel, drawn into the TV scan image (as mods/climb_hud.mm)
 void draw_mod_overlay(Surface& scan);
 // automatic GamePad overlay (display.mm): 32x18 signatures of the pictures (slot 0 GamePad, 1 TV)
